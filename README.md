@@ -11,3 +11,6 @@ delphi websocket library wrapped by rust
 - sendcopy类函数
   使用sendcopy函数的时候，其中的内存不必管，因为此函数会先将数据复制，所以可以在sendcopy之后立即释放，同时AfterSendMsg中的内存信息也是nil。
 
+## 交流QQ群
+本群主要提供一些常用工具库的包装的交流
+点击链接加入群聊【DelphiWrap】：https://jq.qq.com/?_wv=1027&k=sk5mVYR7
