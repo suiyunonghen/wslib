@@ -1,0 +1,26 @@
+[package]
+name = "wslib"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies.tokio-tungstenite]
+version = "0"
+features=["default","rustls-tls-native-roots"]
+
+[dependencies.tokio]
+version = "1"
+features=["full"]
+
+[dependencies.futures-util]
+version = "0"
+
+[dependencies.tokio-rustls]
+version = "0.23.4"
+
+[dependencies.rustls-pemfile]
+version = "0.3.0"
+
+[lib]
+crate-type=["cdylib"]

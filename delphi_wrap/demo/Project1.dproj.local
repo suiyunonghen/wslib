@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<BorlandProject>
+	<Transactions>
+    <Transaction>2021/06/15 13:28:15.000.523,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2021/06/26 11:52:36.000.484,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2021/11/25 09:27:02.000.941,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2021/12/01 21:39:21.000.117,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2021/12/02 09:09:02.000.590,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2022/03/11 17:37:58.000.074,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2022/03/21 09:47:50.000.960,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2022/03/21 14:18:16.000.708,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2022/05/11 14:21:08.000.587,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2022/06/09 15:37:39.000.901,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2022/06/21 14:58:52.000.733,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2022/06/22 11:58:32.000.866,=C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2022/06/22 11:59:17.000.031,C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.dfm=E:\delphi\programs\myprograms\myOpenSource\websocket\wrap\demo\Unit1.dfm</Transaction>
+    <Transaction>2022/06/22 11:59:17.000.031,C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Unit1.pas=E:\delphi\programs\myprograms\myOpenSource\websocket\wrap\demo\Unit1.pas</Transaction>
+    <Transaction>2022/06/22 11:59:20.000.017,C:\Users\Administrator\Documents\Embarcadero\Studio\Projects\Project1.dproj=E:\delphi\programs\myprograms\myOpenSource\websocket\wrap\demo\Project1.dproj</Transaction>
+    <Transaction>2022/06/22 11:59:23.000.472,=E:\delphi\programs\myprograms\myOpenSource\websocket\wrap\demo\Unit2.pas</Transaction>
+    <Transaction>2022/06/22 11:59:34.000.110,E:\delphi\programs\myprograms\myOpenSource\websocket\wrap\demo\Unit2.pas=E:\delphi\programs\myprograms\myOpenSource\websocket\wrap\dxwslib.pas</Transaction>
+  </Transactions>
+</BorlandProject>
