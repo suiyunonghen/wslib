@@ -1,7 +1,7 @@
 unit dxwslib;
 
 interface
-uses Winapi.Windows,System.SysUtils,System.Classes,Vcl.Forms;
+uses Winapi.Windows,System.SysUtils,System.Classes,Vcl.Forms,System.RTLConsts;
 
 type
   TSocketAddrInfo = record
@@ -114,6 +114,36 @@ type
     property OnClientClosed: TOnClientClosed read FOnClientClosed write FOnClientClosed;
   end;
 
+
+  TRustBuffer = record
+  private
+    buf: PByte;
+    buflen: Integer;
+  public
+    Position: Integer;
+    class function Create(str: UTF8String): TRustBuffer; static;
+    function AllocRustBuffer(l: Integer): Boolean;
+    function WriteString(st: UTF8String): Integer;
+  end;
+
+  TRustStream = class(TCustomMemoryStream)
+  private
+    FCapacity: NativeInt;
+  protected
+    procedure SetCapacity(NewCapacity: NativeInt); virtual;
+    function Realloc(var NewCapacity: Longint): Pointer; virtual;
+    property Capacity: NativeInt read FCapacity write SetCapacity;
+  public
+    destructor Destroy; override;
+    procedure Clear;
+    procedure LoadFromStream(Stream: TStream);
+    procedure LoadFromFile(const FileName: string);
+    procedure SetSize(const NewSize: Int64); override;
+    procedure SetSize(NewSize: Longint); override;
+    function Write(const Buffer; Count: Longint): Longint; override;
+    function Write(const Buffer: TBytes; Offset, Count: Longint): Longint; override;
+  end;
+
   TOnRecvMsg = procedure(sender: TObject;msgType: TWebSocketMsgType;data: TStringData) of object;
   TDxSocketClient = class
   private
@@ -128,24 +158,22 @@ type
     procedure DoClientClosed(closeCode: TCloseCode;code: Word;const reason: string);virtual;
     procedure AfterSendMsg(succeed: Boolean; msg: TWebSocketMsg);virtual;
     procedure DoConnected;virtual;
+    //这个里面的buf，只能使用动态库的alloc分配，不需要释放，动态库内部会自动释放
+    function Send(tp: TWebSocketMsgType; buf: PByte;buflen: Integer): Boolean;overload;
   public
     destructor Destroy;override;
-    procedure Close;virtual;    
+    procedure Close;virtual;
     property OnClosed: TOnClientClosed read FOnClosed write FOnClosed;
     property OnRecvmsg: TOnRecvMsg read FOnRecvmsg write FOnRecvmsg;
     property OnAfterSendMsg: TAfterSendMsg read FOnAfterSendMsg write FOnAfterSendMsg;
-    //需要保持buf内存块的生存周期，到AfterSend之后才能释放
-    function Send(tp: TWebSocketMsgType; buf: PByte;buflen: Integer): Boolean;
-    function Ping(buf: PByte;buflen: Integer): Boolean;
-    function Pong(buf: PByte;buflen: Integer): Boolean;
+    //rustBuffer不能重复使用，发送了之后，这个buf就无效了
+    function Send(tp: TWebSocketMsgType;var buf: TRustBuffer): Boolean;overload;
+    //stream发送调用之后，就会清空内容了
+    function Send(tp: TWebSocketMsgType;stream: TRustStream): Boolean;overload;
 
-
-    //这类函数会直接复制数据然后发送，不用保持buf内存块的生存周期
-    function SendCopy(tp: TWebSocketMsgType; buf: PByte;buflen: Integer): Boolean;
-    function SendText(value: string): Boolean;
-    function PingCopy(buf: PByte;buflen: Integer): Boolean;
-    function PongCopy(buf: PByte;buflen: Integer): Boolean;
-
+    function Ping(var buf: TRustBuffer): Boolean;
+    function Pong(var buf: TRustBuffer): Boolean;
+    function SendText(value: UTF8String): Boolean;
     property PeerAddr: string read GetPeerAddr;
   end;
 
@@ -155,11 +183,14 @@ type
 procedure InitWslib(log: TLogCallBack;const maxThread: Word=0;appMainBlock: Boolean=False; const dllpath: string='');
 
 function CloseCodeFromU16(closeCode: Word): TCloseCode;
+
+var
+  alloc: function(size: NativeUInt): Pointer;stdcall;
+  realloc: function(p: Pointer;oldSize,newSize: NativeUInt): Pointer;stdcall;
+  dealloc: procedure(p: Pointer;size: NativeUInt);stdcall;
 implementation
 
 type
-
-
   TBeforeHandleShake = function(socket_Addr: PSocketAddrInfo;manager: Pointer): Boolean;stdcall;
   TWebSocketHandleShake = function(req: Pointer;response: Pointer;manager: Pointer): Boolean;stdcall;
   TWebSocketConnectedCallBack = function(connected: Boolean;socket_write: Pointer;socket_Addr: PSocketAddrInfo;manager: Pointer): Pointer;stdcall;
@@ -184,7 +215,16 @@ type
     keyFile: TStringData;
   end;
 
+  TMemoryNode = record
+    size: NativeUInt;
+    mem: array of Byte;
+  end;
+  PMemoryNode = ^TMemoryNode;
+
+  TCustomMemoryStreamEx = type TCustomMemoryStream;
+
   TVisitHeaderCallBack = function(key,value: TStringData;data: Pointer): Boolean;stdcall;
+
 
 function CloseCodeFromU16(closeCode: Word): TCloseCode;
 begin
@@ -231,8 +271,39 @@ var
   set_resp_header: procedure(resp: Pointer;key,Value: TStringData);stdcall;
   set_resp_status: procedure(resp: Pointer;statusCode: Word);stdcall;
   send_data: function(msg: TWebSocketMsg;rawwriter: Pointer): Boolean;stdcall;
-  send_data_copy: function(msg: TWebSocketMsg;rawwriter: Pointer): Boolean;stdcall;
-  free_writer: procedure(rawwriter: Pointer);stdcall; 
+  free_writer: procedure(rawwriter: Pointer);stdcall;
+
+
+
+
+function GetMem(Size: NativeInt): Pointer;
+var
+  p: PMemoryNode;
+begin
+  if Size > 0 then
+  begin
+    p := alloc(size+Sizeof(NativeUInt));
+    p^.size := Size;
+    result := Pointer(NativeUint(p)+Sizeof(NativeUInt))
+  end
+  else result := nil;
+end;
+
+function FreeMem(p: Pointer): NativeInt;
+begin
+  p := Pointer(NativeUInt(p) - SizeOf(NativeUInt));
+  Result := PMemoryNode(p)^.size;
+  dealloc(p,Result + SizeOf(NativeUInt));
+end;
+
+function ReallocMemory(P: Pointer; Size: NativeInt): Pointer;
+begin
+  p := Pointer(NativeUInt(p) - SizeOf(NativeUInt));
+  p := realloc(p,PMemoryNode(p)^.size+SizeOf(NativeUInt),size+Sizeof(NativeUInt));
+  PMemoryNode(p)^.size := Size;
+  result := Pointer(NativeUint(p)+Sizeof(NativeUInt));
+end;
+
 procedure InitWslib(log: TLogCallBack;const maxThread: Word=0;appMainBlock: Boolean=False; const dllpath: string='');
 var
   str: string;
@@ -261,9 +332,12 @@ begin
     set_resp_header := GetProcAddress(dllHandle,'set_resp_header');
     set_resp_status := GetProcAddress(dllHandle,'set_resp_status');
     send_data := GetProcAddress(dllHandle,'send_data');
-    send_data_copy := GetProcAddress(dllHandle,'send_data_copy');
     free_writer := GetProcAddress(dllHandle,'free_writer');
-    
+
+    alloc := GetProcAddress(dllHandle,'alloc');
+    realloc := GetProcAddress(dllHandle,'realloc');
+    dealloc := GetProcAddress(dllHandle,'dealloc');
+
     init_ws_runtime(maxThread,AppBlockMain,log);
   end;
 end;
@@ -589,61 +663,21 @@ begin
   Result := FAddress.display;
 end;
 
-function TDxSocketClient.Ping(buf: PByte; buflen: Integer): Boolean;
-var
-  msg: TWebSocketMsg;
+function TDxSocketClient.Ping(var buf: TRustBuffer): Boolean;
 begin
   if FWriter = nil then
     Exit(False);
-  msg.msgType := Ord(Msg_Ping);
-  msg.data.utf8data := buf;
-  msg.data.len := buflen;
-  if Assigned(send_data) then
-    result := send_data(msg,FWriter)
-  else Result := False;
+  Result := Send(Msg_Ping,buf);
 end;
 
-function TDxSocketClient.PingCopy(buf: PByte; buflen: Integer): Boolean;
-var
-  msg: TWebSocketMsg;
+
+function TDxSocketClient.Pong(var buf: TRustBuffer): Boolean;
 begin
   if FWriter = nil then
     Exit(False);
-  msg.msgType := Ord(Msg_Ping);
-  msg.data.utf8data := buf;
-  msg.data.len := buflen;
-  if Assigned(send_data_copy) then
-    result := send_data_copy(msg,FWriter)
-  else Result := False;
+  Result := Send(Msg_Pong,buf);
 end;
 
-function TDxSocketClient.Pong(buf: PByte; buflen: Integer): Boolean;
-var
-  msg: TWebSocketMsg;
-begin
-  if FWriter = nil then
-    Exit(False);
-  msg.msgType := Ord(Msg_Pong);
-  msg.data.utf8data := buf;
-  msg.data.len := buflen;
-  if Assigned(send_data) then
-    result := send_data(msg,FWriter)
-  else Result := False;
-end;
-
-function TDxSocketClient.PongCopy(buf: PByte; buflen: Integer): Boolean;
-var
-  msg: TWebSocketMsg;
-begin
-  if FWriter = nil then
-    Exit(False);
-  msg.msgType := Ord(Msg_Pong);
-  msg.data.utf8data := buf;
-  msg.data.len := buflen;
-  if Assigned(send_data_copy) then
-    result := send_data_copy(msg,FWriter)
-  else Result := False;
-end;
 
 function TDxSocketClient.Send(tp: TWebSocketMsgType;buf: PByte; buflen: Integer): Boolean;
 var
@@ -659,35 +693,38 @@ begin
   else result := False;
 end;
 
-function TDxSocketClient.SendCopy(tp: TWebSocketMsgType; buf: PByte;
-  buflen: Integer): Boolean;
-var
-  msg: TWebSocketMsg;
+function TDxSocketClient.Send(tp: TWebSocketMsgType; var buf: TRustBuffer): Boolean;
 begin
-  if FWriter <> nil then
-  begin 
-    msg.msgType := Ord(tp);
-    msg.data.utf8data := buf;
-    msg.data.len := buflen;
-    result := send_data_copy(msg,FWriter);
-  end
-  else Result := False;
+  if (buf.buf = nil) or (buf.buflen = 0) then
+    Exit(False);
+  result := Send(tp,buf.buf,buf.buflen); //发送到写完的
+  buf.buf := nil;
+  buf.buflen := 0;
+  buf.Position := 0;
 end;
 
-function TDxSocketClient.SendText(value: string): Boolean;
+function TDxSocketClient.SendText(value: UTF8String): Boolean;
 var
   st: AnsiString;
   msg: TWebSocketMsg;
+  bf: TRustBuffer;
 begin
   if (value = '') or (FWriter = nil) then
     Exit(False);
-  st := UTF8Encode(Value);
-  msg.msgType := Ord(Msg_Text);
-  msg.data.utf8data := @st[1];
-  msg.data.len := Length(st);
-  if Assigned(send_data_copy) then
-    result := send_data_copy(msg,FWriter)
-  else Result := False;
+  bf := TRustBuffer.Create(value);
+  result := Send(Msg_Text,bf);
+end;
+
+function TDxSocketClient.Send(tp: TWebSocketMsgType;
+  stream: TRustStream): Boolean;
+begin
+  if (stream.Memory = nil) or (stream.Size = 0) then
+    Exit(False);
+  result := Send(tp,stream.Memory,stream.Size); //发送到写完的
+  stream.FCapacity := 0;
+  TCustomMemoryStreamEx(Stream).FMemory := nil;
+  TCustomMemoryStreamEx(Stream).FSize := 0;
+  TCustomMemoryStreamEx(Stream).FPosition := 0;
 end;
 
 { THandleShakeResponse }
@@ -713,6 +750,194 @@ begin
   if resp <> nil then
     set_resp_status(resp,code);
 end;
+
+{ TRustBuffer }
+
+function TRustBuffer.AllocRustBuffer(l: Integer): Boolean;
+begin
+  self.buf := alloc(l);
+  if self.buf <> nil then
+    self.buflen := l
+  else self.buflen := 0;
+  Position := 0;
+  Result := buf <> nil;
+end;
+
+class function TRustBuffer.Create(str: UTF8String): TRustBuffer;
+begin
+   Result.AllocRustBuffer(Length(str));
+   Move(str[1],result.buf^,result.buflen);
+   result.Position := result.buflen;
+end;
+
+function TRustBuffer.WriteString(st: UTF8String): Integer;
+var
+  left: Integer;
+begin
+  Result := Length(st);
+  if buflen = 0 then
+  begin
+    if not self.AllocRustBuffer(Result) then
+      Exit(0);
+  end;
+  left := buflen - Position;
+  if Result > left then
+  begin
+    buflen := Position+result;
+    Self.buf := realloc(buf,buflen,buflen);
+  end;
+  Inc(Position,Result);
+  CopyMemory(Pointer(NativeUInt(buf)+Position),@st[1],Length(st));
+end;
+
+{ TRustStream }
+
+const
+  MemoryDelta = $2000; { Must be a power of 2 }
+
+procedure TRustStream.Clear;
+begin
+  SetCapacity(0);
+  TCustomMemoryStreamEx(self).FSize := 0;
+  TCustomMemoryStreamEx(self).FPosition := 0;
+end;
+
+destructor TRustStream.Destroy;
+begin
+  Clear;
+  inherited;
+end;
+
+procedure TRustStream.LoadFromFile(const FileName: string);
+var
+  Stream: TStream;
+begin
+  Stream := TFileStream.Create(FileName, fmOpenRead or fmShareDenyWrite);
+  try
+    LoadFromStream(Stream);
+  finally
+    Stream.Free;
+  end;
+end;
+
+procedure TRustStream.LoadFromStream(Stream: TStream);
+var
+  Count: Int64;
+begin
+  Stream.Position := 0;
+  Count := Stream.Size;
+  SetSize(Count);
+  if Count <> 0 then Stream.ReadBuffer(TCustomMemoryStreamEx(self).FMemory^, Count);
+end;
+
+function TRustStream.Realloc(var NewCapacity: Longint): Pointer;
+var
+  OldCap: Longint;
+begin
+  OldCap := FCapacity;
+  if (NewCapacity > 0) and (NewCapacity <> TCustomMemoryStreamEx(self).FSize) then
+    NewCapacity := (NewCapacity + (MemoryDelta - 1)) and not (MemoryDelta - 1);
+  Result := Memory;
+  if NewCapacity <> FCapacity then
+  begin
+    if NewCapacity = 0 then
+    begin
+      dealloc(Memory,OldCap);
+      Result := nil;
+    end
+    else
+    begin
+      if Capacity = 0 then
+        Result := alloc(NewCapacity)
+      else
+        result := dxwslib.realloc(Result,OldCap, NewCapacity);
+      if Result = nil then raise EStreamError.CreateRes(@SMemoryStreamError);
+    end;
+  end;
+end;
+
+procedure TRustStream.SetCapacity(NewCapacity: NativeInt);
+{$IF SizeOf(LongInt) = SizeOf(NativeInt)}
+begin
+  SetPointer(Realloc(LongInt(NewCapacity)), Size);
+  FCapacity := NewCapacity;
+end;
+{$ELSEIF SizeOf(LongInt) < SizeOf(NativeInt)} // LP64 / Win64 platform
+var
+  NewCapacityLongInt: LongInt;
+begin
+  NewCapacityLongInt := NewCapacity;
+  SetPointer(Realloc(NewCapacityLongInt), Size);
+  NewCapacity := NewCapacityLongInt;
+  FCapacity := NewCapacity;
+end;
+{$ENDIF}
+
+procedure TRustStream.SetSize(const NewSize: Int64);
+var
+  OldPosition: NativeInt;
+begin
+  OldPosition := TCustomMemoryStreamEx(Self).FPosition;
+  SetCapacity(NewSize);
+  TCustomMemoryStreamEx(Self).FSize := NewSize;
+  if OldPosition > NewSize then Seek(0, soEnd);
+end;
+
+procedure TRustStream.SetSize(NewSize: Longint);
+begin
+  SetSize(Int64(NewSize));
+end;
+
+function TRustStream.Write(const Buffer: TBytes; Offset,
+  Count: Longint): Longint;
+var
+  Pos: Int64;
+begin
+  if (TCustomMemoryStreamEx(Self).FPosition >= 0) and (Count >= 0) then
+  begin
+    Pos := TCustomMemoryStreamEx(Self).FPosition + Count;
+    if Pos > 0 then
+    begin
+      if Pos > TCustomMemoryStreamEx(Self).FSize then
+      begin
+        if Pos > FCapacity then
+          SetCapacity(Pos);
+        TCustomMemoryStreamEx(Self).FSize := Pos;
+      end;
+      System.Move(Buffer[Offset], (PByte(TCustomMemoryStreamEx(Self).FMemory) + TCustomMemoryStreamEx(Self).FPosition)^, Count);
+      TCustomMemoryStreamEx(Self).FPosition := Pos;
+      Result := Count;
+      Exit;
+    end;
+  end;
+  Result := 0;
+end;
+
+function TRustStream.Write(const Buffer; Count: Longint): Longint;
+var
+  Pos: Int64;
+begin
+  if (TCustomMemoryStreamEx(Self).FPosition >= 0) and (Count >= 0) then
+  begin
+    Pos := TCustomMemoryStreamEx(Self).FPosition + Count;
+    if Pos > 0 then
+    begin
+      if Pos > TCustomMemoryStreamEx(Self).FSize then
+      begin
+        if Pos > FCapacity then
+          SetCapacity(Pos);
+        TCustomMemoryStreamEx(Self).FSize := Pos;
+      end;
+      System.Move(Buffer, (PByte(TCustomMemoryStreamEx(Self).FMemory) + TCustomMemoryStreamEx(Self).FPosition)^, Count);
+      TCustomMemoryStreamEx(Self).FPosition := Pos;
+      Result := Count;
+      Exit;
+    end;
+  end;
+  Result := 0;
+end;
+
+
 
 initialization
 finalization

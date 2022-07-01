@@ -1,11 +1,8 @@
 extern crate core;
 use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
-//use std::future::Future;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-//use std::sync::atomic::Ordering;
-//use std::vec;
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use crate::tungstenite::Message;
@@ -41,116 +38,139 @@ pub struct WebSocketMsg{
 }
 
 impl WebSocketMsg {
-    pub fn message(&self)->Option<Message>{
+    pub fn message(&self,copy_data: bool)->(Option<Message>,Option<Vec<u8>>){
         match MsgType::from(self.msg_type) {
             MsgType::Text=>{
                 if self.data.data == 0 || self.data.len == 0{
-                    return Some(Message::Text("".to_string()));
+                    return (Some(Message::Text("".to_string())),None);
                 }
                 if self.data.len as isize != -1{
                     let s = unsafe{
                         String::from_raw_parts(self.data.data as *mut u8,self.data.len,self.data.len)
                     };
-                    std::mem::forget(s);
-                    let s = unsafe{
-                        String::from_raw_parts(self.data.data as *mut u8,self.data.len,self.data.len)
-                    };
-                    Some(Message::Text(s))
+                    if !copy_data{
+                        (Some(Message::Text(s)),None)
+                    }else{
+                        let v:Vec<u8> = Vec::from(s.as_str());
+                        (Some(Message::Text(s)),Some(v))
+                    }
                 }else{
                     let v = unsafe{
                         Box::from_raw(self.data.data as *mut Vec<u8>)
                     };
                     if let Ok(s) = String::from_utf8(*v){
-                        Some(Message::Text(s))
+                        if !copy_data{
+                            (Some(Message::Text(s)),None)
+                        }else{
+                            let v_result = Vec::from(s.as_str());
+                            (Some(Message::Text(s)),Some(v_result))
+                        }
                     }else{
-                        None
+                        (None,None)
                     }
                 }
             },
             MsgType::Binary=>{
                 if self.data.data == 0 || self.data.len == 0{
-                    return Some(Message::Binary(Vec::new()));
+                    return (Some(Message::Binary(Vec::new())),None);
                 }
                 if self.data.len as isize == -1{
                     let v = unsafe{
                         Box::from_raw(self.data.data as *mut Vec<u8>)
                     };
-                    return Some(Message::Binary(*v));
+                    if !copy_data{
+                        return (Some(Message::Binary(*v)),None);
+                    }
+                    let v_result: Vec<u8> = Vec::from(v.as_slice());
+                    return (Some(Message::Binary(*v)),Some(v_result));
                 }
                 let s = unsafe{
                     Vec::from_raw_parts(self.data.data as *mut u8,self.data.len,self.data.len)
                 };
-                std::mem::forget(s);
-                let s = unsafe{
-                    Vec::from_raw_parts(self.data.data as *mut u8,self.data.len,self.data.len)
-                };
-                Some(Message::Binary(s))
+                if !copy_data{
+                    return (Some(Message::Binary(s)),None);
+                }
+                let v = Vec::from(s.as_slice());
+                (Some(Message::Binary(s)),Some(v))
             },
             MsgType::Ping=>{
                 if self.data.data == 0 || self.data.len == 0{
-                    return Some(Message::Ping(Vec::new()));
+                    return (Some(Message::Ping(Vec::new())),None);
                 }
                 if self.data.len as isize == -1{
                     let v = unsafe{
                         Box::from_raw(self.data.data as *mut Vec<u8>)
                     };
-                    return Some(Message::Ping(*v));
+                    if !copy_data{
+                        return (Some(Message::Ping(*v)),None);
+                    }
+                    let vdata = Vec::from(v.as_slice());
+                    return (Some(Message::Ping(*v)),Some(vdata))
                 }
                 let s = unsafe{
                     Vec::from_raw_parts(self.data.data as *mut u8,self.data.len,self.data.len)
                 };
-                std::mem::forget(s);
-                let s = unsafe{
-                    Vec::from_raw_parts(self.data.data as *mut u8,self.data.len,self.data.len)
-                };
-                Some(Message::Ping(s))
+                if !copy_data{
+                    return (Some(Message::Ping(s)),None)
+                }
+                let v_data = Vec::from(s.as_slice());
+                (Some(Message::Ping(s)),Some(v_data))
             },
             MsgType::Pong=>{
                 if self.data.data == 0 || self.data.len == 0{
-                    return Some(Message::Pong(Vec::new()));
+                    return (Some(Message::Pong(Vec::new())),None);
                 }
                 if self.data.len as isize == -1{
                     let v = unsafe{
                         Box::from_raw(self.data.data as *mut Vec<u8>)
                     };
-                    return Some(Message::Pong(*v));
+                    if !copy_data{
+                        return (Some(Message::Pong(*v)),None);
+                    }
+                    let vdata = Vec::from(v.as_slice());
+                    return (Some(Message::Pong(*v)),Some(vdata))
                 }
                 let s = unsafe{
                     Vec::from_raw_parts(self.data.data as *mut u8,self.data.len,self.data.len)
                 };
-                std::mem::forget(s);
-                let s = unsafe{
-                    Vec::from_raw_parts(self.data.data as *mut u8,self.data.len,self.data.len)
-                };
-                Some(Message::Pong(s))
+                if !copy_data{
+                    return (Some(Message::Pong(s)),None)
+                }
+                let vdata = Vec::from(s.as_slice());
+                return (Some(Message::Pong(s)),Some(vdata))
             },
             MsgType::Close=>{
                 let mut frame = CloseFrame{
                     code: CloseCode::from(self.code),
                     reason: Default::default(),
                 };
+                let mut v_result: Option<Vec<u8>> = None;
                 if self.data.data != 0 && self.data.len != 0{
                     if self.data.len as isize == -1{
                         let v = unsafe{
                             Box::from_raw(self.data.data as *mut Vec<u8>)
                         };
                         return match String::from_utf8(*v){
-                          Ok(s)=>Some(Message::Text(s)),
-                          _=>None,
+                          Ok(s)=>{
+                              if !copy_data{
+                                  frame.reason = Cow::Owned(s);
+                                  (Some(Message::Close(Some(frame))),None)
+                              }else{
+                                  (Some(Message::Close(Some(frame))),Some(Vec::from(s.as_str())))
+                              }
+                          },
+                          _=>(None,None),
                         };
                     }
                     let s = unsafe{
                         String::from_raw_parts(self.data.data as *mut u8,self.data.len,self.data.len)
                     };
-                    std::mem::forget(s);
-                    let s = unsafe{
-                        String::from_raw_parts(self.data.data as *mut u8,self.data.len,self.data.len)
-                    };
+                    v_result = Some(Vec::from(s.as_str()));
                     frame.reason = Cow::Owned(s);
                 }
-                Some(Message::Close(Some(frame)))
+                (Some(Message::Close(Some(frame))),v_result)
             },
-            _=>None,
+            _=>(None,None),
         }
     }
 
@@ -177,15 +197,29 @@ pub enum LogLevel {
     LLPanic,
 }
 
-impl LogLevel {
-    pub fn value(&self) -> isize {
-        match *self {
+impl From<LogLevel> for isize {
+    fn from(l: LogLevel) -> Self {
+        match l {
             LogLevel::LLDebug => 0,
             LogLevel::LLInfo => 1,
             LogLevel::LLWarn => 2,
             LogLevel::LLError => 3,
             LogLevel::LLException => 4,
             LogLevel::LLPanic => 5,
+        }
+    }
+}
+
+impl From<isize> for LogLevel {
+    fn from(code: isize) -> Self {
+        match code {
+            0=>LogLevel::LLDebug,
+            1=>LogLevel::LLInfo,
+            2=>LogLevel::LLWarn,
+            3=>LogLevel::LLError,
+            4=>LogLevel::LLException,
+            5=>LogLevel::LLPanic,
+            _=>LogLevel::LLDebug,
         }
     }
 }
@@ -252,15 +286,19 @@ impl Display for SocketAddrInfo {
 pub static mut LOG: Option<LogCallBack> = None;
 pub static mut RUNTIME_NOTIFY: Option<Arc<tokio::sync::watch::Sender<Option<()>>>> = None;
 
-pub fn log_msg(msg: &str, level: LogLevel){
-    unsafe {
-        if let Some(ref callback) = LOG{
-            (*callback)(level.value(),StringData{
-                data: msg.as_ptr() as usize,
-                len: msg.len() as usize,
-            });
+#[macro_export]
+macro_rules! log_msg {
+    ($level: expr, $($msg: expr),+) => {
+        unsafe{
+            if let Some(ref callback) = LOG{
+                let st = format!($($msg),+);
+                (*callback)(isize::from($level),StringData{
+                    data: st.as_bytes().as_ptr() as usize,
+                    len:  st.len(),
+                });
+            }
         }
-    }
+    };
 }
 
 
@@ -362,13 +400,40 @@ pub extern "stdcall" fn finalize_ws_runtime(){
     }
 }
 
+#[no_mangle]
+pub extern "stdcall" fn alloc(size: usize)->usize{
+    let layout = std::alloc::Layout::from_size_align(size,std::mem::size_of::<usize>()).unwrap();
+    unsafe{
+        std::alloc::alloc(layout) as usize
+    }
+}
+
+#[no_mangle]
+pub extern "stdcall" fn realloc(p: usize, old_size: usize,size: usize)->usize{
+    let layout = std::alloc::Layout::from_size_align(old_size,std::mem::size_of::<usize>()).unwrap();
+    unsafe {
+        std::alloc::realloc(p as *mut u8,layout,size) as usize
+    }
+}
+
+#[no_mangle]
+pub extern "stdcall" fn dealloc(p: usize,size: usize){
+    let layout = std::alloc::Layout::from_size_align(size,std::mem::size_of::<usize>()).unwrap();
+    unsafe {
+        std::alloc::dealloc(p as *mut u8,layout)
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
+    use std::io::{stdout, Write};
     use std::time::Duration;
     use tokio::io::{AsyncWriteExt};
     use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::{self,handshake::server::{Response as HandleShakeResponse,ErrorResponse},http::{Request as HandleShakeRequest,StatusCode}};
+    use tokio_tungstenite::tungstenite;
+    use crate::{finalize_ws_runtime, init_ws_runtime, MsgType, SocketAddrInfo, StringData};
+    use crate::websocket_srv::{ServerCallBack, TlsFileInfo, websocket_listen};
 
 
     async fn test_websocket(){
@@ -428,99 +493,67 @@ mod tests {
     }
 
 
-    fn handle_shake(req: &HandleShakeRequest<()>, mut res: HandleShakeResponse)->Result<HandleShakeResponse, ErrorResponse>{
-        if req.uri().path().eq_ignore_ascii_case("/ttg"){
+    extern "stdcall" fn lib_log(log_level: isize,log_info: StringData){
+        let s = unsafe{
+            String::from_raw_parts(log_info.data as *mut u8,log_info.len,log_info.len)
+        };
+        let s = std::mem::ManuallyDrop::new(s);
+        stdout().write(s.as_bytes()).unwrap();
+    }
 
+
+    extern "stdcall" fn handle_shake(req: usize,response: usize,manager: usize)->bool{
+        true
+    }
+
+    extern "stdcall" fn client_connected(connected: bool,socket_write: usize,socket_addr: *const SocketAddrInfo, manager: usize)->usize{
+        if connected{
+            socket_write
         }else{
-            *res.status_mut() = StatusCode::BAD_REQUEST;
-        }
-        Ok(res)
-    }
-
-    async fn handle_connection(stream: tokio::net::TcpStream){
-        let ws_stream = tokio_tungstenite::accept_hdr_async(stream,handle_shake).await.expect("accept error");
-        let (mut ws_sender,mut ws_receiver) = ws_stream.split();
-        let mut interval = tokio::time::interval(Duration::from_millis(500));
-        let mut stdout = tokio::io::stdout();
-        loop{
-            tokio::select! {
-                msg = ws_receiver.next()=>{
-                    if let Some(msg) = msg{
-                        match msg  {
-                            Ok(message) =>{
-                                match message {
-                                    tungstenite::Message::Text(ref txt)=>{
-                                        let _ = stdout.write(format!("接收到消息了额：{}\r\n",txt).as_bytes()).await;
-                                        ws_sender.send(message).await.unwrap();
-                                        //ws_sender.send(tungstenite::Message::Close(None)).await.unwrap();
-                                        let _ = ws_sender.close().await;
-                                    },
-                                    tungstenite::Message::Binary(_)=>{
-                                        ws_sender.send(message).await.unwrap();
-                                    },
-                                    tungstenite::Message::Ping(data)=>{
-                                        //回复pong
-                                        ws_sender.send(tungstenite::Message::Pong(data)).await.unwrap();
-                                    },
-                                    tungstenite::Message::Close(_)=>{
-                                        let _ = stdout.write("正常关闭\r\n".as_bytes()).await;
-                                        break;
-                                    },
-                                    _=>(),
-                                }
-                            },
-                            Err(e)=>{
-                                //发生错误了
-                                let _ = tokio::io::stderr().write(format!("发生错误了啦：{}\r\n",e).as_bytes()).await;
-                                break;
-                            }
-                        }
-                    }else{
-                        //完毕了，
-                        break;
-                    }
-                },
-                _=interval.tick()=>{
-                    let _ = ws_sender.send(tungstenite::Message::Text("定时发送消息".to_owned())).await;
-                }
-            }
+            0
         }
     }
 
-    async fn test_websocket_srv(){
-        let listener = tokio::net::TcpListener::bind("0.0.0.0:8088").await.expect("listen错误");
-        let sleep = tokio::time::sleep(tokio::time::Duration::from_secs(5));
-        let accept = listener.accept();
-        tokio::pin!(sleep);
-        let mut stdout = tokio::io::stdout();
-        tokio::select! {
-            _ = &mut sleep =>{
-                let _ = stdout.write("准备结束了\r\n".as_bytes()).await;
+    extern "stdcall" fn recv(msg_type: i8,data: StringData,client: usize,manager: usize){
+        match MsgType::from(msg_type as u16){
+            MsgType::Text=>{
+                let s = unsafe{
+                    String::from_raw_parts(data.data as *mut u8,data.len,data.len)
+                };
+                let s = std::mem::ManuallyDrop::new(s);
+                stdout().write(s.as_bytes()).unwrap();
             },
-            //tokio_native_tls::TlsAcceptor::accept()
-           result = accept =>{
-                //只接收一次
-                if let Ok((stream,_)) = result{
-                    /*let acceptor = acceptor.clone();
-                    let mut stream = acceptor.accept(stream).await.unwrap();*/
-                    handle_connection(stream).await;
-                }else{
-                    let _ = stdout.write("发生错误了\r\n".as_bytes()).await.unwrap();
-                }
+            _=>{
+
             }
         }
-       /* while let Ok((stream,m)) = listener.accept().await{
+    }
 
-        }*/
+    async fn serve(){
+        let callback = ServerCallBack{
+            manager: 0,
+            before_handle_shake: None,
+            on_handle_shake: Some(handle_shake),
+            on_connected: Some(client_connected),
+            on_recv: Some(recv),
+            on_send: None,
+            on_closed: None
+        };
+        let _ = websocket_listen(8088,callback,TlsFileInfo::default());
+
+    }
+
+    extern "stdcall" fn main_srv(){
+        tokio::spawn(serve());
+        tokio::spawn(test_websocket());
+        std::thread::sleep(std::time::Duration::from_secs(6));
     }
 
     #[test]
     fn it_works() {
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        runtime.spawn(test_websocket());
-        runtime.block_on(test_websocket_srv());
-        let result = 2 + 2;
-        assert_eq!(result, 4);
+        init_ws_runtime(0,Some(main_srv),Some(lib_log));
+        finalize_ws_runtime();
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
     #[test]

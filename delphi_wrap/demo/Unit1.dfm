@@ -16,7 +16,7 @@ object Form1: TForm1
   TextHeight = 13
   object Button1: TButton
     Left = 8
-    Top = 8
+    Top = 9
     Width = 89
     Height = 33
     Caption = #30417#21548
@@ -60,7 +60,7 @@ object Form1: TForm1
   end
   object Button2: TButton
     Left = 671
-    Top = 16
+    Top = 17
     Width = 75
     Height = 25
     Caption = #21457#36865

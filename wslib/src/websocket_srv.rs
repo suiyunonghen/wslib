@@ -2,7 +2,7 @@ use std::net::{IpAddr};
 use std::path::Path;
 use std::sync::{Arc};
 use std::sync::atomic::Ordering;
-use crate::{log_msg, LogLevel, MsgType, RUNTIME_NOTIFY, SocketAddrInfo, StringData, WebSocketCloseCallBack, WebSocketConnectedCallBack, WebSocketRecvCallBack, WebSocketSendCallBack};
+use crate::{log_msg,LOG, LogLevel, MsgType, RUNTIME_NOTIFY, SocketAddrInfo, StringData, WebSocketCloseCallBack, WebSocketConnectedCallBack, WebSocketRecvCallBack, WebSocketSendCallBack};
 use tokio_tungstenite::{tungstenite::{self,handshake::server::{Response as HandleShakeResponse, ErrorResponse},
                                       http::{Request as HandleShakeRequest, StatusCode}}, WebSocketStream};
 use crate::{LogLevel::LLError,WebSocketMsg};
@@ -15,6 +15,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_rustls::{TlsAcceptor,rustls::{self,Certificate, PrivateKey}};
 use tokio_tungstenite::tungstenite::http::header::HeaderName;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 #[no_mangle]
 pub extern "stdcall" fn get_header(header: StringData,req: usize,result: *mut StringData){
@@ -96,6 +97,7 @@ pub extern "stdcall" fn set_resp_header(resp: usize,key: StringData,value: Strin
     let (key,resp) = unsafe{
         (Vec::<u8>::from_raw_parts(key.data as *mut u8,key.len,key.len),&mut *resp)
     };
+    let key = std::mem::ManuallyDrop::new(key);//外部的，不需要内部释放
     if let Ok(key) = HeaderName::from_bytes(key.as_slice()){
         if value.data  as usize == 0 || value.len == 0{
             resp.headers_mut().remove(key);
@@ -104,6 +106,7 @@ pub extern "stdcall" fn set_resp_header(resp: usize,key: StringData,value: Strin
         let value = unsafe{
             Vec::<u8>::from_raw_parts(value.data as *mut u8,value.len,value.len)
         };
+        let value = std::mem::ManuallyDrop::new(value); //外部的，不需要内部释放
         if let Ok(value) = HeaderValue::from_bytes(value.as_slice()){
             resp.headers_mut().insert(key,value);
         }
@@ -149,6 +152,15 @@ pub struct TlsFileInfo{
     pub key_file: StringData,           //证书的秘钥文件
 }
 
+impl TlsFileInfo {
+    pub fn default()->Self{
+        Self{
+            cert_file: StringData::empty(),
+            key_file:  StringData::empty(),
+        }
+    }
+}
+
 
 async fn runtime_quit_notify()->(){
     unsafe{
@@ -176,7 +188,7 @@ fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
 #[no_mangle]
 pub extern "stdcall" fn websocket_listen(port: u16, callback: ServerCallBack,tls: TlsFileInfo)->usize{
     if let None =  callback.on_connected{
-        log_msg("未指定on_connected",LogLevel::LLDebug);
+        log_msg!(LogLevel::LLDebug, "未指定on_connected");
         return 0;
     }
     let mut ip_port = "0.0.0.0:".to_string();
@@ -192,27 +204,20 @@ pub extern "stdcall" fn websocket_listen(port: u16, callback: ServerCallBack,tls
     let cert_file = unsafe{
         String::from_raw_parts(tls.cert_file.data as *mut u8,tls.cert_file.len,tls.cert_file.len)
     };
-    std::mem::forget(cert_file);
-    let cert_file = unsafe{
-        String::from_raw_parts(tls.cert_file.data as *mut u8,tls.cert_file.len,tls.cert_file.len)
-    };
+    let cert_file = std::mem::ManuallyDrop::new(cert_file);
     let key_file = unsafe{
         String::from_raw_parts(tls.key_file.data as *mut u8,tls.key_file.len,tls.key_file.len)
     };
-    std::mem::forget(key_file);
-    let key_file = unsafe{
-        String::from_raw_parts(tls.key_file.data as *mut u8,tls.key_file.len,tls.key_file.len)
-    };
-
+    let key_file = std::mem::ManuallyDrop::new(key_file);
     let certs = {
-        if let Ok(f) = load_certs(Path::new(&cert_file)){
+        if let Ok(f) = load_certs(Path::new(&*cert_file)){
             f
         }else{
             return 0;
         }
     };
     let mut keys = {
-        if let Ok(f) = load_keys(Path::new(&key_file)){
+        if let Ok(f) = load_keys(Path::new(&*key_file)){
             f
         }else{
             return 0;
@@ -232,7 +237,7 @@ pub extern "stdcall" fn websocket_listen(port: u16, callback: ServerCallBack,tls
 }
 
 async fn handle_listener(ip_port: String,callback: ServerCallBack,tx: Arc<tokio::sync::watch::Sender<Option<()>>>,mut rx: tokio::sync::watch::Receiver<Option<()>>,acceptor: Option<TlsAcceptor>){
-    log_msg(&format!("websocket start at {}",&ip_port),LogLevel::LLDebug);
+    log_msg!(LogLevel::LLDebug,"websocket start at {}",&ip_port);
     let listener = tokio::net::TcpListener::bind(&ip_port).await.unwrap();
     let callback = Arc::new(callback);
     loop {
@@ -240,7 +245,7 @@ async fn handle_listener(ip_port: String,callback: ServerCallBack,tx: Arc<tokio:
         tokio::select! {
             _ = rx.changed()=>{
                 //要停止了，关闭服务
-                log_msg(&format!("websocket服务{}关闭",ip_port),LogLevel::LLDebug);
+                log_msg!(LogLevel::LLDebug,"websocket服务{}关闭",&ip_port);
                 return;
             },
             _= runtime_quit_notify()=>{
@@ -250,7 +255,7 @@ async fn handle_listener(ip_port: String,callback: ServerCallBack,tx: Arc<tokio:
             tcp = accept=>{
                 match tcp{
                     Err(e)=>{
-                        log_msg(&format!("accept发生错误了：{}",e),LLError);
+                        log_msg!(LLError,"accept发生错误了：{}",e);
                         return ;
                     },
                     Ok((stream,_))=>{
@@ -279,7 +284,7 @@ async fn handle_listener(ip_port: String,callback: ServerCallBack,tx: Arc<tokio:
                                 }
                             },
                             Err(e)=>{
-                                log_msg(&format!("获取远程地址的时候发生了错误：{}",e),LogLevel::LLError);
+                                log_msg!(LogLevel::LLError,"获取远程地址的时候发生了错误：{}",e);
                                 return;
                             }
                         }
@@ -290,7 +295,7 @@ async fn handle_listener(ip_port: String,callback: ServerCallBack,tx: Arc<tokio:
                                     tokio::spawn(handle_accept(stream,callback.clone(),tx.subscribe(),addr_info));
                                 },
                                 Err(e)=>{
-                                    log_msg(&format!("{} tls握手失败：{}",addr_info,e),LogLevel::LLError);
+                                    log_msg!(LogLevel::LLError,"{} tls握手失败：{}",addr_info,e);
                                     return;
                                 }
                             }
@@ -336,7 +341,7 @@ async fn handle_accept<S: AsyncRead + AsyncWrite + Unpin>(stream: S,callback: Ar
         Ok(ws_stream)=>{
             {
                 if !handle_ok.load(Ordering::SeqCst){
-                    log_msg("握手失败了",LogLevel::LLError);
+                    log_msg!(LogLevel::LLError,"握手失败了");
                     on_connected(false,0,&addr_info as *const SocketAddrInfo, callback.manager);
                     return ;
                 }
@@ -346,7 +351,7 @@ async fn handle_accept<S: AsyncRead + AsyncWrite + Unpin>(stream: S,callback: Ar
             let new_sender = Box::into_raw(new_sender) as usize;
             let client = on_connected(true,new_sender,&addr_info as *const SocketAddrInfo, callback.manager);
             if client == 0{
-                log_msg("未成功创建client",LogLevel::LLDebug);
+                log_msg!(LogLevel::LLDebug,"未成功创建client");
                 //释放掉
                 unsafe {
                     let _ = Box::from_raw(new_sender as *mut UnboundedSender<WebSocketMsg>);
@@ -357,7 +362,7 @@ async fn handle_accept<S: AsyncRead + AsyncWrite + Unpin>(stream: S,callback: Ar
         },
         Err(e)=>{
             on_connected(false,0,&addr_info as *const SocketAddrInfo, callback.manager);
-            log_msg(&format!("websocket握手{}失败：{}",addr_info.to_string(),e),LLError);
+            log_msg!(LLError,"websocket握手{}失败：{}",addr_info.to_string(),e);
         }
     }
 }
@@ -368,7 +373,7 @@ async fn handle_websocket<S: AsyncRead + AsyncWrite + Unpin>(client: usize,ws_st
     loop {
         tokio::select! {
             _=rx.changed()=>{
-                log_msg("server退出",LogLevel::LLDebug);
+                log_msg!(LogLevel::LLDebug,"server退出");
                 if let Some(on_close) = callback.on_closed{
                     on_close(1000,StringData::empty(),client,callback.manager);
                 }
@@ -395,30 +400,66 @@ async fn handle_websocket<S: AsyncRead + AsyncWrite + Unpin>(client: usize,ws_st
             },
             send_recv = msg_recv.recv()=>{
                 //接收到要发送的数据了
-                if let Some(orgin_msg) = send_recv{
-                    let is_close = MsgType::from(orgin_msg.msg_type);
-                    if let Some(msg) = orgin_msg.message(){
-                        if let Err(e) = ws_sender.send(msg).await{
-                            log_msg(&format!("发送失败：{}",e),LLError);
-                            if let Some(on_send) = callback.on_send{
-                                on_send(false,orgin_msg,client,callback.manager);
-                            }
-                            return;
-                        }else {
-                            if let Some(on_send) = callback.on_send{
-                                on_send(true,orgin_msg,client,callback.manager);
-                            }
-                            if let MsgType::Close = is_close{
-                                if let Some(on_close) = callback.on_closed{
-                                    on_close(1002,StringData::empty(),client,callback.manager);
+                if let Some(mut orgin_msg) = send_recv{
+                    match callback.on_send {
+                        Some(on_send)=>{
+                            if let (Some(msg),vdata) = orgin_msg.message(true){
+                                let mut after_send = |send_ok: bool,vdata: Option<Vec<u8>>|{
+                                    if let Some(vdata) = vdata{
+                                        orgin_msg.data.data = vdata.as_slice().as_ptr() as usize;
+                                        orgin_msg.data.len = vdata.len();
+                                        //log_msg!(LLDebug,"{:?}",vdata);
+                                        on_send(send_ok,orgin_msg,client,callback.manager);
+                                    }else{
+                                        orgin_msg.data.data = 0;
+                                        orgin_msg.data.len = 0;
+                                        on_send(send_ok,orgin_msg,client,callback.manager);
+                                    }
+                                };
+                                if let Err(e) = ws_sender.send(msg).await{
+                                    log_msg!(LLError,"发送信息错误：{}",e);
+                                    after_send(false,vdata);
+                                    if let Some(on_close) = callback.on_closed{
+                                        on_close(u16::from(CloseCode::Error),StringData::empty(),client,callback.manager);
+                                    }
+                                    return;
                                 }
-                                let _ =msg_sender.closed().await;
+                                after_send(true,vdata);
+                                if let MsgType::Close = MsgType::from(orgin_msg.msg_type){
+                                    if let Some(on_close) = callback.on_closed{
+                                        on_close(1002,StringData::empty(),client,callback.manager);
+                                    }
+                                    let _ =msg_sender.closed().await;
+                                    return;
+                                }
+                            }else{
+                                //错误了
+                                return;
+                            }
+                        },
+                        _=>{
+                            if let (Some(msg),_) = orgin_msg.message(false){
+                                if let Err(e) = ws_sender.send(msg).await{
+                                    //发送失败了
+                                    //log_msg(&format!())
+                                    log_msg!(LLError,"发送信息发生错误：{}",e);
+                                    if let Some(on_close) = callback.on_closed{
+                                        on_close(u16::from(CloseCode::Error),StringData::empty(),client,callback.manager);
+                                    }
+                                    return;
+                                }
+                                if let MsgType::Close = MsgType::from(orgin_msg.msg_type){
+                                    if let Some(on_close) = callback.on_closed{
+                                        on_close(1002,StringData::empty(),client,callback.manager);
+                                    }
+                                    let _ =msg_sender.closed().await;
+                                    return;
+                                }
+                            }else{
+                                //发生错误了
                                 return;
                             }
                         }
-                    }else{
-                        //关闭了
-                        return;
                     }
                 }else{
                     //关闭了
@@ -474,7 +515,7 @@ pub extern "stdcall" fn stop_listen(notify_handle: usize){
     if notify_handle == 0{
         return;
     }
-    log_msg("stop_listen",LogLevel::LLDebug);
+    log_msg!(LogLevel::LLDebug,"stop_listen");
     unsafe {
         let sender = Box::from_raw(notify_handle  as *mut Arc<tokio::sync::watch::Sender<Option<()>>>);
         let _ =sender.send(Some(()));

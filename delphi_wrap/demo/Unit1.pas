@@ -4,7 +4,7 @@ interface
 
 uses
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
-  Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls,dxwslib,Winapi.Winsock2,
+  Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls,dxwslib,Winapi.Winsock2,System.Rtti,
   Vcl.ExtCtrls;
 
 type
@@ -25,9 +25,11 @@ type
     procedure DoClientConnected(Client: TDxSocketClient);
     procedure DoClientClosed(Client: TDxSocketClient;closeCode: TCloseCode;code: Word;reason: string);
     procedure DoRecvMsg(sender: TObject;Client: TDxSocketClient; msgType: TWebSocketMsgType;data: TStringData);
+    procedure DoAfterSend(client: TDxSocketClient;succeed: Boolean; msg: TWebSocketMsg);
   public
     { Public declarations }
     server: TDxWebSocketServer;
+    tmpStream: TRustStream;
   end;
 
 var
@@ -45,6 +47,9 @@ end;
 procedure TForm1.Button2Click(Sender: TObject);
 var
   Client: TDxSocketClient;
+  buf: TRustBuffer;
+  st: UTF8String;
+  i: Integer;
 begin
   if ListBox1.ItemIndex = -1 then
   begin
@@ -52,7 +57,29 @@ begin
     Exit;
   end;
   client := ListBox1.Items.Objects[ListBox1.ItemIndex] as TDxSocketClient;
-  client.SendText(Edit1.Text);
+  //client.SendText(Edit1.Text);
+  for i := 0 to 10 do
+  begin
+    Client.SendText('测试不得闲发斯蒂芬234123412431324')
+  end;
+end;
+
+procedure TForm1.DoAfterSend(client: TDxSocketClient; succeed: Boolean;
+  msg: TWebSocketMsg);
+begin
+  //不需要释放
+  if (msg.data.utf8data <> nil) and (msg.data.len <> 0) then
+  begin
+    if succeed then
+      TThread.Synchronize(nil,procedure
+        begin
+          Memo1.Lines.Add('发送成功：'+msg.data.Value)
+        end)
+    else TThread.Synchronize(nil,procedure
+        begin
+          Memo1.Lines.Add('发送失败：'+msg.data.Value)
+        end)
+  end;
 end;
 
 procedure TForm1.DoBeforeHandleShake(sender: TObject; peerAddr: PSocketAddrInfo;
@@ -158,14 +185,16 @@ end;
 
 procedure TForm1.FormCreate(Sender: TObject);
 begin
-
   server := TDxWebSocketServer.Create;
   server.Port := 8088;
+  server.OnAfterSendMsg := DoAfterSend;
   server.BeforeHandleShake := DoBeforeHandleShake;
   server.OnHandleShake := DoHandleShake;
   server.OnClientConnected := DoClientConnected;
   server.OnClientClosed := DoClientClosed;
   server.OnRecvMsg := DoRecvMsg;
+
+
 end;
 
 end.
