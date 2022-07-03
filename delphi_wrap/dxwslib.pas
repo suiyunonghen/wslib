@@ -477,7 +477,7 @@ procedure TDxWebSocketServer.AfterSendMsg(succeed: Boolean; msg: TWebSocketMsg;c
 begin
   if Assigned(FOnAfterSendMsg) then
     FOnAfterSendMsg(client,succeed,msg)
-  else
+  else client.AfterSendMsg(succeed,msg);
 end;
 
 function TDxWebSocketServer.DoBeforeHandleShake(peerAddr: PSocketAddrInfo): Boolean;
@@ -490,6 +490,7 @@ end;
 procedure TDxWebSocketServer.DoClientClosed(client: TDxSocketClient;
   closeCode: TCloseCode; code: Word; const reason: string);
 begin
+  AtomicExchange(Client.FWriter,nil);
   if Assigned(FOnClientClosed) then
     FOnClientClosed(client,closeCode,Code,reason)
   else client.DoClientClosed(closeCode,code,reason);
@@ -503,7 +504,7 @@ begin
   if connected then
   begin
     Client := TDxSocketClient.Create;
-    Client.FWriter := socket_write;
+    AtomicExchange(Client.FWriter,socket_write);
     Move(socket_Addr^,Client.FAddress,SizeOf(Client.FAddress));
     Result := Client;
     if Assigned(FOnClientConnected) then
@@ -618,23 +619,28 @@ end;
 procedure TDxSocketClient.Close;
 var
   msg: TWebSocketMsg;
+  writer: Pointer;
 begin
-  if FWriter <> nil then
+  writer := AtomicCmpExchange(FWriter,nil,nil);
+  if Writer <> nil then
   begin
     msg.msgType := Ord(Msg_Close);
     msg.data.utf8data := nil;
     msg.data.len := 0;
-    send_data(msg,FWriter);
-    FWriter := nil;
+    send_data(msg,Writer);
+    AtomicExchange(FWriter,nil)
   end;
 end;
 
 destructor TDxSocketClient.Destroy;
+var
+  writer: Pointer;
 begin
-  if FWriter <> nil then
+  writer := AtomicCmpExchange(FWriter,nil,nil);
+  if writer <> nil then
   begin
-    free_writer(FWriter);
-    FWriter := nil;
+    free_writer(writer);
+    AtomicExchange(FWriter,nil);
   end;
   inherited;
 end;
@@ -665,16 +671,12 @@ end;
 
 function TDxSocketClient.Ping(var buf: TRustBuffer): Boolean;
 begin
-  if FWriter = nil then
-    Exit(False);
   Result := Send(Msg_Ping,buf);
 end;
 
 
 function TDxSocketClient.Pong(var buf: TRustBuffer): Boolean;
 begin
-  if FWriter = nil then
-    Exit(False);
   Result := Send(Msg_Pong,buf);
 end;
 
@@ -682,13 +684,17 @@ end;
 function TDxSocketClient.Send(tp: TWebSocketMsgType;buf: PByte; buflen: Integer): Boolean;
 var
   msg: TWebSocketMsg;
+  writer: Pointer;
 begin
-  if FWriter <> nil then
+  writer := AtomicCmpExchange(FWriter,nil,nil);
+  if writer <> nil then
   begin 
     msg.msgType := Ord(tp);
     msg.data.utf8data := buf;
     msg.data.len := buflen;
-    result := send_data(msg,FWriter);
+    result := send_data(msg,writer);
+    if tp = Msg_Close then
+      AtomicExchange(FWriter,nil);
   end
   else result := False;
 end;
@@ -705,11 +711,9 @@ end;
 
 function TDxSocketClient.SendText(value: UTF8String): Boolean;
 var
-  st: AnsiString;
-  msg: TWebSocketMsg;
   bf: TRustBuffer;
 begin
-  if (value = '') or (FWriter = nil) then
+  if value = '' then
     Exit(False);
   bf := TRustBuffer.Create(value);
   result := Send(Msg_Text,bf);
