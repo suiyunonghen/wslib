@@ -15,9 +15,11 @@ type
     ListBox1: TListBox;
     Edit1: TEdit;
     Button2: TButton;
+    Button3: TButton;
     procedure FormCreate(Sender: TObject);
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
+    procedure Button3Click(Sender: TObject);
   private
     { Private declarations }
     procedure DoBeforeHandleShake(sender: TObject;peerAddr: PSocketAddrInfo;var succed: Boolean);
@@ -26,10 +28,13 @@ type
     procedure DoClientClosed(Client: TDxSocketClient;closeCode: TCloseCode;code: Word;reason: string);
     procedure DoRecvMsg(sender: TObject;Client: TDxSocketClient; msgType: TWebSocketMsgType;data: TStringData);
     procedure DoAfterSend(client: TDxSocketClient;succeed: Boolean; msg: TWebSocketMsg);
+
+    procedure DoClientConnected1(sender: TObject);
   public
     { Public declarations }
     server: TDxWebSocketServer;
     tmpStream: TRustStream;
+    client: TDxWebSocketClient;
   end;
 
 var
@@ -61,6 +66,20 @@ begin
   for i := 0 to 10 do
   begin
     Client.SendText('测试不得闲发斯蒂芬234123412431324')
+  end;
+end;
+
+procedure TForm1.Button3Click(Sender: TObject);
+begin
+  if Client = nil then
+  begin
+    client := TDxWebSocketClient.Create;
+    client.AddProto('chat3');
+    client.AddProto('file4');
+    client.AddHead('user','dxsoft');
+    Client.AddHead('token','123');
+    client.OnConnected := DoClientConnected1;
+    client.Connect('ws://127.0.0.1:8088/test1');
   end;
 end;
 
@@ -116,6 +135,17 @@ begin
   Client.Free;
 end;
 
+procedure TForm1.DoClientConnected1(sender: TObject);
+begin
+  if GetCurrentThreadId = MainThreadID then
+  begin
+  end
+  else TThread.Synchronize(nil,procedure
+    begin
+      Showmessage('客户端连接成功');
+    end);
+end;
+
 procedure TForm1.DoClientConnected(Client: TDxSocketClient);
 var
   ip: string;
@@ -144,7 +174,7 @@ begin
   end
   else if request.RequestPath = '/test1' then
   begin
-    if request.Headers['token'] = '123' then
+    if (request.Headers['token'] = '123') and (request.Headers['user'] = 'dxsoft') then
       Succed := True;
   end;
   if not succed then
@@ -185,6 +215,8 @@ end;
 
 procedure TForm1.FormCreate(Sender: TObject);
 begin
+
+
   server := TDxWebSocketServer.Create;
   server.Port := 8088;
   server.OnAfterSendMsg := DoAfterSend;

@@ -17,7 +17,7 @@ begin
   Application.Initialize;
   Application.MainFormOnTaskbar := True;
   Application.CreateForm(TForm1, Form1);
-  InitWslib(log_msg,0,false,'wslib_x86.dll');
-  //InitWslib(log_msg,0,False,'E:\delphi\programs\myprograms\myOpenSource\websocket\wslib\target\i686-pc-windows-msvc\release\wslib.dll');
+  //InitWslib(log_msg,0,false,'wslib_x86.dll');
+  InitWslib(log_msg,0,False,'E:\delphi\programs\myprograms\myOpenSource\websocket\wslib\target\i686-pc-windows-msvc\release\wslib.dll');
   //Application.Run;
 end.

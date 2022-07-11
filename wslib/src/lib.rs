@@ -3,7 +3,11 @@ use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-use tokio_tungstenite::tungstenite;
+use futures_util::SinkExt;
+use futures_util::stream::SplitSink;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_tungstenite::{tungstenite, WebSocketStream};
+use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use crate::tungstenite::Message;
 use crate::tungstenite::protocol::CloseFrame;
@@ -286,6 +290,16 @@ impl Display for SocketAddrInfo {
 pub static mut LOG: Option<LogCallBack> = None;
 pub static mut RUNTIME_NOTIFY: Option<Arc<tokio::sync::watch::Sender<Option<()>>>> = None;
 
+pub async fn runtime_quit_notify()->(){
+    unsafe{
+        if let Some(ref tx) = RUNTIME_NOTIFY{
+            let _ = tx.subscribe().changed().await;
+            return;
+        }
+    }
+    std::future::pending::<()>().await;
+}
+
 #[macro_export]
 macro_rules! log_msg {
     ($level: expr, $($msg: expr),+) => {
@@ -402,7 +416,7 @@ pub extern "stdcall" fn finalize_ws_runtime(){
 
 #[no_mangle]
 pub extern "stdcall" fn alloc(size: usize)->usize{
-    let layout = std::alloc::Layout::from_size_align(size,std::mem::size_of::<usize>()).unwrap();
+    let layout = std::alloc::Layout::array::<u8>(size).unwrap();
     unsafe{
         std::alloc::alloc(layout) as usize
     }
@@ -410,7 +424,7 @@ pub extern "stdcall" fn alloc(size: usize)->usize{
 
 #[no_mangle]
 pub extern "stdcall" fn realloc(p: usize, old_size: usize,size: usize)->usize{
-    let layout = std::alloc::Layout::from_size_align(old_size,std::mem::size_of::<usize>()).unwrap();
+    let layout = std::alloc::Layout::array::<u8>(old_size).unwrap();
     unsafe {
         std::alloc::realloc(p as *mut u8,layout,size) as usize
     }
@@ -418,12 +432,52 @@ pub extern "stdcall" fn realloc(p: usize, old_size: usize,size: usize)->usize{
 
 #[no_mangle]
 pub extern "stdcall" fn dealloc(p: usize,size: usize){
-    let layout = std::alloc::Layout::from_size_align(size,std::mem::size_of::<usize>()).unwrap();
+    let layout = std::alloc::Layout::array::<u8>(size).unwrap();
     unsafe {
         std::alloc::dealloc(p as *mut u8,layout)
     }
 }
 
+
+//失败返回false
+pub async fn handle_recv<T>(msg: Result<Message,Error>,onclose: Option<WebSocketCloseCallBack>,on_recv: Option<WebSocketRecvCallBack>,
+                            ws_sender: &mut SplitSink<WebSocketStream<T>, Message>,client: usize,manager: usize)->bool
+    where T: AsyncRead + AsyncWrite + Unpin
+{
+    match msg{
+        Ok(msg)=>{
+            if let Message::Close(frame) = msg{
+                if let Some(on_close) = onclose{
+                    if let Some(frame) = frame{
+                        let mut reason = StringData::empty();
+                        reason.len = frame.reason.len();
+                        if reason.len > 0{
+                            reason.data = frame.reason.as_ptr() as usize;
+                        }
+                        on_close(u16::from(frame.code),reason,client,manager);
+                    }
+                }
+                let _ = ws_sender.close().await;
+                return false;
+            }else if let MsgType::Close = process_msg(client,manager,msg,on_recv){
+                let _ = ws_sender.close().await;
+                return false;
+            }
+        },
+        Err(e)=>{
+            //发生错误，退出
+            if let Some(on_closed) = onclose{
+                let mut err = format!("recv error:{}",e);
+                on_closed(1011,StringData{
+                    data: err.as_mut_ptr() as usize,
+                    len: err.len(),
+                },client,manager);
+            }
+            return false;
+        }
+    }
+    true
+}
 
 #[cfg(test)]
 mod tests {

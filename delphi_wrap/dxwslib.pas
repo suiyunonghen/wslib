@@ -152,8 +152,8 @@ type
     FOnRecvmsg: TOnRecvMsg;
     FOnClosed: TOnClientClosed;
     FOnAfterSendMsg: TAfterSendMsg;
-    function GetPeerAddr: string;
   protected
+    function GetPeerAddr: string; virtual;
     procedure DoRecvWebSocketMsg(msgType: TWebSocketMsgType;data: TStringData);virtual;
     procedure DoClientClosed(closeCode: TCloseCode;code: Word;const reason: string);virtual;
     procedure AfterSendMsg(succeed: Boolean; msg: TWebSocketMsg);virtual;
@@ -175,6 +175,39 @@ type
     function Pong(var buf: TRustBuffer): Boolean;
     function SendText(value: UTF8String): Boolean;
     property PeerAddr: string read GetPeerAddr;
+  end;
+
+  THeaderValue = record
+    Key: UTF8String;
+    Value: UTF8String;
+  end;
+
+  THeadData = record
+    key: TStringData;
+    value: TStringData;
+  end;
+
+  TDxWebSocketClient = class(TDxSocketClient)
+  private
+    FprotoCount,FExtCount,FHeadCount: Byte;
+    FProtocols: array[0..15] of UTF8String;
+    FExtensions: array[0..15] of UTF8String;
+    FCustomHeaders: array[0..15] of THeaderValue;
+    protoData,ExtData: array[0..15] of TStringData;
+    headData: array[0..15] of THeadData;
+    FPeerAddr: string;
+    FOnConnected: TNotifyEvent;
+  protected
+    procedure DoConnected;override;
+  public
+    procedure Connect(wsUrl: UTF8String);
+    procedure AddProto(proto: Utf8String);
+    procedure AddExtension(ext: UTF8String);
+    procedure AddHead(key,Value: UTF8String);
+    procedure ClearHead;
+    procedure ClearProto;
+    procedure ClearExten;
+    property OnConnected: TNotifyEvent read FOnConnected write FOnConnected;
   end;
 
   TBlockProcedure = procedure;stdcall;
@@ -255,6 +288,22 @@ begin
   Application.Run;
 end;
 
+type
+  TClientConfig = record
+    ws_url: TStringData;
+    protocol: TStringData;
+    extensions: TStringData;
+    customHeaders: TStringData;
+  end;
+
+  TWebsocketClientCallBack = record
+    manager: Pointer;
+    on_connected: TWebSocketConnectedCallBack;
+    on_recv: TWebsocketRecvCallBack;
+    on_send: TWebsocketSendCallBack;
+    on_closed: TWebSocketCloseCallBack;
+  end;
+
 var
   dllHandle: THandle=0;
   
@@ -272,7 +321,7 @@ var
   set_resp_status: procedure(resp: Pointer;statusCode: Word);stdcall;
   send_data: function(msg: TWebSocketMsg;rawwriter: Pointer): Boolean;stdcall;
   free_writer: procedure(rawwriter: Pointer);stdcall;
-
+  ws_connect: procedure(config: TClientConfig;callback: TWebsocketClientCallBack);stdcall;
 
 
 
@@ -333,6 +382,7 @@ begin
     set_resp_status := GetProcAddress(dllHandle,'set_resp_status');
     send_data := GetProcAddress(dllHandle,'send_data');
     free_writer := GetProcAddress(dllHandle,'free_writer');
+    ws_connect := GetProcAddress(dllHandle,'ws_connect');
 
     alloc := GetProcAddress(dllHandle,'alloc');
     realloc := GetProcAddress(dllHandle,'realloc');
@@ -449,13 +499,34 @@ begin
 end;
 
 function clientConnected(connected: Boolean;socket_write: Pointer;socket_Addr: PSocketAddrInfo;manager: Pointer): Pointer;stdcall;
+var
+  client: TDxWebSocketClient;
 begin
-  result := TDxWebSocketServer(manager).DoClientConnected(connected,socket_write,socket_Addr);
+  if TObject(manager).InheritsFrom(TDxWebSocketServer) then
+    result := TDxWebSocketServer(manager).DoClientConnected(connected,socket_write,socket_Addr)
+  else if TObject(manager).InheritsFrom(TDxWebSocketClient) then
+  begin
+    if connected then
+    begin
+      client := TDxWebSocketClient(manager);
+      Move(socket_Addr^,Client.FAddress,SizeOf(Client.FAddress));
+      AtomicExchange(Client.FWriter,socket_write);
+      client.DoConnected;
+      Result := Client;
+    end
+    else
+    begin
+      Result := nil;
+    end;
+  end;
 end;
 
 procedure recvWebSocketMsg(msgType: Byte;data: TStringData;client,manager: Pointer);stdcall;
 begin
-  TDxWebSocketServer(manager).DoRecvWebSocketMsg(TWebSocketMsgType(msgType),data,client);
+  if TObject(manager).InheritsFrom(TDxWebSocketServer) then
+    TDxWebSocketServer(manager).DoRecvWebSocketMsg(TWebSocketMsgType(msgType),data,client)
+  else if TObject(manager).InheritsFrom(TDxWebSocketClient) then
+    TDxWebSocketClient(manager).DoRecvWebSocketMsg(TWebSocketMsgType(msgType),data);
 end;
 
 procedure afterSendMsg(succeed: Boolean;msg: TWebSocketMsg;client,manager: Pointer);stdcall;
@@ -465,12 +536,16 @@ begin
     msg.data.utf8data := nil;
     msg.data.len := 0;
   end;
-  TDxWebSocketServer(manager).AfterSendMsg(succeed,msg,client);
+  if TObject(manager).InheritsFrom(TDxWebSocketServer) then
+    TDxWebSocketServer(manager).AfterSendMsg(succeed,msg,client)
+  else TDxWebSocketClient(manager).AfterSendMsg(succeed,msg);
 end;
 
 procedure clientClosed(code: Word;reason: TStringData;client,manager: Pointer);stdcall;
 begin
-  TDxWebSocketServer(manager).DoClientClosed(client,CloseCodeFromU16(code),code,reason.Value);
+  if TObject(manager).InheritsFrom(TDxWebSocketServer) then
+    TDxWebSocketServer(manager).DoClientClosed(client,CloseCodeFromU16(code),code,reason.Value)
+  else TDxWebSocketClient(manager).DoClientClosed(CloseCodeFromU16(code),code,reason.Value);
 end;
 
 procedure TDxWebSocketServer.AfterSendMsg(succeed: Boolean; msg: TWebSocketMsg;client: TDxSocketClient);
@@ -942,6 +1017,141 @@ begin
 end;
 
 
+procedure TDxWebSocketClient.Connect(wsUrl: UTF8String);
+var
+  cfg: TClientConfig;
+  i,idx: Integer;
+  callback: TWebsocketClientCallBack;
+begin
+  if AtomicCmpExchange(FWriter,nil,nil) <> nil then
+    Exit;
+  if Assigned(ws_connect) then
+  begin
+    cfg.ws_url.utf8data := @wsurl[1];
+    cfg.ws_url.len := Length(wsUrl);
+    idx := 0;
+    for i := 0 to FprotoCount - 1 do
+    begin
+      protoData[idx].len := Length(FProtocols[i]);
+      if protoData[idx].len > 0 then
+      begin
+        protoData[idx].utf8data := @(FProtocols[i])[1];
+        Inc(idx);
+      end;
+    end;
+    cfg.protocol.utf8data := Pointer(@protoData[0]);
+    cfg.protocol.len := idx;
+    idx := 0;
+    for i := 0 to FExtCount - 1 do
+    begin
+      ExtData[idx].len := Length(FExtensions[i]);
+      if ExtData[idx].len > 0 then
+      begin
+        ExtData[idx].utf8data := @(FExtensions[i])[1];
+        Inc(idx);
+      end;
+    end;
+    cfg.extensions.utf8data := Pointer(@ExtData[0]);
+    cfg.extensions.len := idx;
+
+    idx := 0;
+    for i := 0 to FHeadCount - 1 do
+    begin
+      if (FCustomHeaders[i].Key = '') or (FCustomHeaders[i].Value = '') then
+        continue;
+      headData[idx].key.utf8data := @(FCustomHeaders[i].Key)[1];
+      headData[idx].key.len := Length(FCustomHeaders[i].Key);
+
+      headData[idx].value.utf8data := @(FCustomHeaders[i].Value)[1];
+      headData[idx].value.len := Length(FCustomHeaders[i].Value);
+      Inc(idx);
+    end;
+    cfg.customHeaders.utf8data := Pointer(@headData[0]);
+    cfg.customHeaders.len := idx;
+
+    callback.manager := self;
+    callback.on_connected := clientConnected;
+    callback.on_recv := recvWebSocketMsg;
+    callback.on_send := dxwslib.afterSendMsg;
+    callback.on_closed := clientClosed;
+
+    ws_connect(cfg,callback)
+  end;
+end;
+
+
+procedure TDxWebSocketClient.AddExtension(ext: UTF8String);
+var
+  i: Integer;
+begin
+  if FExtCount = 16 then
+    Exit;
+  for i := 0 to FExtCount - 1 do
+  begin
+    if Sametext(ext,FExtensions[i]) then
+      Exit;
+  end;
+  FExtensions[FExtCount] := ext;
+  inc(FExtCount);
+end;
+
+procedure TDxWebSocketClient.AddHead(key, Value: UTF8String);
+var
+  i: Integer;
+begin
+  if FHeadCount = 16 then
+    Exit;
+  for i := 0 to FHeadCount - 1 do
+  begin
+    if FCustomHeaders[i].Key = key then
+    begin
+      FCustomHeaders[i].Value := Value;
+      Exit;
+    end;
+  end;
+  if Value <> '' then
+  begin
+    FCustomHeaders[FHeadCount].Key := Key;
+    FCustomHeaders[FHeadCount].Value := Value;
+    Inc(FHeadCount);
+  end;
+end;
+
+procedure TDxWebSocketClient.AddProto(proto: Utf8String);
+var
+  i: Integer;
+begin
+  if FprotoCount = 16 then
+    Exit;
+  for i := 0 to FprotoCount - 1 do
+  begin
+    if Sametext(proto,FProtocols[i]) then
+      Exit;
+  end;
+  FProtocols[FprotoCount] := proto;
+  inc(FprotoCount);
+end;
+
+procedure TDxWebSocketClient.ClearExten;
+begin
+  FExtCount := 0;
+end;
+
+procedure TDxWebSocketClient.ClearHead;
+begin
+  FHeadCount := 0;
+end;
+
+procedure TDxWebSocketClient.ClearProto;
+begin
+  FprotoCount := 0;
+end;
+
+procedure TDxWebSocketClient.DoConnected;
+begin
+  if Assigned(FOnConnected) then
+    FOnConnected(self);
+end;
 
 initialization
 finalization

@@ -2,11 +2,11 @@ use std::net::{IpAddr};
 use std::path::Path;
 use std::sync::{Arc};
 use std::sync::atomic::Ordering;
-use crate::{log_msg,LOG, LogLevel, MsgType, RUNTIME_NOTIFY, SocketAddrInfo, StringData, WebSocketCloseCallBack, WebSocketConnectedCallBack, WebSocketRecvCallBack, WebSocketSendCallBack};
-use tokio_tungstenite::{tungstenite::{self,handshake::server::{Response as HandleShakeResponse, ErrorResponse},
+use crate::{log_msg, LOG, LogLevel, SocketAddrInfo, StringData, WebSocketCloseCallBack, WebSocketConnectedCallBack, WebSocketRecvCallBack, WebSocketSendCallBack, websocket_sender};
+use tokio_tungstenite::{tungstenite::{handshake::server::{Response as HandleShakeResponse, ErrorResponse},
                                       http::{Request as HandleShakeRequest, StatusCode}}, WebSocketStream};
-use crate::{LogLevel::LLError,WebSocketMsg};
-use futures_util::{StreamExt, SinkExt};
+use crate::{LogLevel::LLError,WebSocketMsg,runtime_quit_notify};
+use futures_util::{StreamExt};
 use std::fs::File;
 use std::io::{self, BufReader};
 use rustls_pemfile::{certs, rsa_private_keys};
@@ -15,7 +15,6 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_rustls::{TlsAcceptor,rustls::{self,Certificate, PrivateKey}};
 use tokio_tungstenite::tungstenite::http::header::HeaderName;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 #[no_mangle]
 pub extern "stdcall" fn get_header(header: StringData,req: usize,result: *mut StringData){
@@ -23,8 +22,14 @@ pub extern "stdcall" fn get_header(header: StringData,req: usize,result: *mut St
         let key = String::from_raw_parts(header.data as *mut u8,header.len,header.len);
         let req = req as *const HandleShakeRequest<()>;
         let req = &*req;
-        let v = req.headers().get(key).unwrap();
-        v.as_bytes()
+        match req.headers().get(key){
+            None => {
+                (*result).data = 0;
+                (*result).len = 0;
+                return;
+            }
+            Some(v) => v.as_bytes()
+        }
     };
     unsafe {
         (*result).data = data.as_ptr() as usize;
@@ -161,16 +166,6 @@ impl TlsFileInfo {
     }
 }
 
-
-async fn runtime_quit_notify()->(){
-    unsafe{
-        if let Some(ref tx) = RUNTIME_NOTIFY{
-            let _ = tx.subscribe().changed().await;
-            return;
-        }
-    }
-    std::future::pending::<()>().await;
-}
 
 
 fn load_certs(path: &Path) -> std::io::Result<Vec<Certificate>> {
@@ -361,8 +356,8 @@ async fn handle_accept<S: AsyncRead + AsyncWrite + Unpin>(stream: S,callback: Ar
             handle_websocket(client,ws_stream,msg_sender,msg_recv,rx,callback).await;
         },
         Err(e)=>{
-            on_connected(false,0,&addr_info as *const SocketAddrInfo, callback.manager);
             log_msg!(LLError,"websocket握手{}失败：{}",addr_info.to_string(),e);
+            on_connected(false,0,&addr_info as *const SocketAddrInfo, callback.manager);
         }
     }
 }
@@ -395,71 +390,15 @@ async fn handle_websocket<S: AsyncRead + AsyncWrite + Unpin>(client: usize,ws_st
                 if let Some(on_close) = callback.on_closed{
                     on_close(1000,StringData::empty(),client,callback.manager);
                 }
-                let _ =msg_sender.closed().await;
+                let _ = msg_sender.closed().await;
                 return;
             },
             send_recv = msg_recv.recv()=>{
                 //接收到要发送的数据了
-                if let Some(mut orgin_msg) = send_recv{
-                    match callback.on_send {
-                        Some(on_send)=>{
-                            if let (Some(msg),vdata) = orgin_msg.message(true){
-                                let mut after_send = |send_ok: bool,vdata: Option<Vec<u8>>|{
-                                    if let Some(vdata) = vdata{
-                                        orgin_msg.data.data = vdata.as_slice().as_ptr() as usize;
-                                        orgin_msg.data.len = vdata.len();
-                                        //log_msg!(LLDebug,"{:?}",vdata);
-                                        on_send(send_ok,orgin_msg,client,callback.manager);
-                                    }else{
-                                        orgin_msg.data.data = 0;
-                                        orgin_msg.data.len = 0;
-                                        on_send(send_ok,orgin_msg,client,callback.manager);
-                                    }
-                                };
-                                if let Err(e) = ws_sender.send(msg).await{
-                                    log_msg!(LLError,"发送信息错误：{}",e);
-                                    after_send(false,vdata);
-                                    if let Some(on_close) = callback.on_closed{
-                                        on_close(u16::from(CloseCode::Error),StringData::empty(),client,callback.manager);
-                                    }
-                                    return;
-                                }
-                                after_send(true,vdata);
-                                if let MsgType::Close = MsgType::from(orgin_msg.msg_type){
-                                    if let Some(on_close) = callback.on_closed{
-                                        on_close(1002,StringData::empty(),client,callback.manager);
-                                    }
-                                    let _ =msg_sender.closed().await;
-                                    return;
-                                }
-                            }else{
-                                //错误了
-                                return;
-                            }
-                        },
-                        _=>{
-                            if let (Some(msg),_) = orgin_msg.message(false){
-                                if let Err(e) = ws_sender.send(msg).await{
-                                    //发送失败了
-                                    //log_msg(&format!())
-                                    log_msg!(LLError,"发送信息发生错误：{}",e);
-                                    if let Some(on_close) = callback.on_closed{
-                                        on_close(u16::from(CloseCode::Error),StringData::empty(),client,callback.manager);
-                                    }
-                                    return;
-                                }
-                                if let MsgType::Close = MsgType::from(orgin_msg.msg_type){
-                                    if let Some(on_close) = callback.on_closed{
-                                        on_close(1002,StringData::empty(),client,callback.manager);
-                                    }
-                                    let _ =msg_sender.closed().await;
-                                    return;
-                                }
-                            }else{
-                                //发生错误了
-                                return;
-                            }
-                        }
+                if let Some(orgin_msg) = send_recv{
+                    if !websocket_sender::handle_send(orgin_msg,callback.on_send,callback.on_closed,&mut ws_sender,client,callback.manager).await{
+                        let _ = msg_sender.closed().await;
+                        return;
                     }
                 }else{
                     //关闭了
@@ -468,37 +407,9 @@ async fn handle_websocket<S: AsyncRead + AsyncWrite + Unpin>(client: usize,ws_st
             },
             recv = ws_receiver.next()=>{
                 if let Some(msg) = recv{
-                    match msg{
-                        Ok(msg)=>{
-                            if let tungstenite::Message::Close(frame) = msg{
-                                if let Some(on_close) = callback.on_closed{
-                                    if let Some(frame) = frame{
-                                        let mut reason = StringData::empty();
-                                        reason.len = frame.reason.len();
-                                        if reason.len > 0{
-                                            reason.data = frame.reason.as_ptr() as usize;
-                                        }
-                                        on_close(u16::from(frame.code),reason,client,callback.manager);
-                                    }
-                                }
-                                let _ = ws_sender.close().await;
-                                return ;
-                            }else if let crate::MsgType::Close = crate::process_msg(client,callback.manager,msg,callback.on_recv){
-                                let _ = ws_sender.close().await;
-                                return;
-                            }
-                        },
-                        Err(e)=>{
-                            //发生错误，退出
-                            if let Some(on_closed) = callback.on_closed{
-                                let mut err = format!("recv error:{}",e);
-                                on_closed(1011,StringData{
-                                    data: err.as_mut_ptr() as usize,
-                                    len: err.len(),
-                                },client,callback.manager);
-                            }
-                            return;
-                        }
+                    if !crate::handle_recv(msg,callback.on_closed,callback.on_recv,&mut ws_sender,client,callback.manager).await{
+                        let _ = msg_sender.closed().await;
+                        return;
                     }
                 }else{
                     //没有接收到数据了
