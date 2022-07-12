@@ -506,9 +506,9 @@ begin
     result := TDxWebSocketServer(manager).DoClientConnected(connected,socket_write,socket_Addr)
   else if TObject(manager).InheritsFrom(TDxWebSocketClient) then
   begin
+    client := TDxWebSocketClient(manager);
     if connected then
     begin
-      client := TDxWebSocketClient(manager);
       Move(socket_Addr^,Client.FAddress,SizeOf(Client.FAddress));
       AtomicExchange(Client.FWriter,socket_write);
       client.DoConnected;

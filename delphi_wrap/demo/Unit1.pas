@@ -11,15 +11,22 @@ type
   TForm1 = class(TForm)
     Button1: TButton;
     Panel1: TPanel;
-    Memo1: TMemo;
     ListBox1: TListBox;
     Edit1: TEdit;
     Button2: TButton;
     Button3: TButton;
+    Panel2: TPanel;
+    Memo1: TMemo;
+    Memo2: TMemo;
+    EdtClient: TEdit;
+    Button4: TButton;
+    Button5: TButton;
     procedure FormCreate(Sender: TObject);
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
+    procedure Button4Click(Sender: TObject);
+    procedure Button5Click(Sender: TObject);
   private
     { Private declarations }
     procedure DoBeforeHandleShake(sender: TObject;peerAddr: PSocketAddrInfo;var succed: Boolean);
@@ -27,6 +34,7 @@ type
     procedure DoClientConnected(Client: TDxSocketClient);
     procedure DoClientClosed(Client: TDxSocketClient;closeCode: TCloseCode;code: Word;reason: string);
     procedure DoRecvMsg(sender: TObject;Client: TDxSocketClient; msgType: TWebSocketMsgType;data: TStringData);
+    procedure DoCliengRecvMsg(sender: TObject;msgType: TWebSocketMsgType;data: TStringData);
     procedure DoAfterSend(client: TDxSocketClient;succeed: Boolean; msg: TWebSocketMsg);
 
     procedure DoClientConnected1(sender: TObject);
@@ -74,12 +82,30 @@ begin
   if Client = nil then
   begin
     client := TDxWebSocketClient.Create;
+    client.OnConnected := DoClientConnected1;
+    client.OnRecvmsg := DoCliengRecvMsg;
+    client.OnClosed := DoClientClosed;
     client.AddProto('chat3');
     client.AddProto('file4');
     client.AddHead('user','dxsoft');
     Client.AddHead('token','123');
-    client.OnConnected := DoClientConnected1;
-    client.Connect('ws://127.0.0.1:8088/test1');
+  end;
+  client.Connect('ws://127.0.0.1:8088/test1');
+end;
+
+procedure TForm1.Button4Click(Sender: TObject);
+begin
+  if client <> nil then
+  begin
+    client.SendText(EdtClient.Text);
+  end;
+end;
+
+procedure TForm1.Button5Click(Sender: TObject);
+begin
+  if client <> nil then
+  begin
+    Client.Close;
   end;
 end;
 
@@ -113,6 +139,35 @@ begin
   succed := True;
 end;
 
+procedure TForm1.DoCliengRecvMsg(sender: TObject; msgType: TWebSocketMsgType;
+  data: TStringData);
+begin
+  case msgType of
+  Msg_Text:
+    begin
+      if GetCurrentThreadId = MainThreadID then
+      begin
+        Memo2.Lines.Add(FormatDateTime('HH:NN:SS.zzz',Now)+'【'+TDxWebSocketClient(sender).PeerAddr+'】：');
+        Memo2.Lines.Add(data.Value)
+      end
+      else
+      begin
+        TThread.Synchronize(nil,procedure
+          begin
+            Memo2.Lines.Add(FormatDateTime('HH:NN:SS.zzz',Now)+'【'+TDxWebSocketClient(sender).PeerAddr+'】：');
+            Memo2.Lines.Add(data.Value)
+          end);
+      end;
+    end;
+  Msg_Bin: ;
+  Msg_Ping: ;
+  Msg_Pong: ;
+  Msg_Close: ;
+  Msg_Frame: ;
+  Msg_None: ;
+  end;
+end;
+
 procedure TForm1.DoClientClosed(Client: TDxSocketClient; closeCode: TCloseCode;
   code: Word; reason: string);
 var
@@ -120,29 +175,57 @@ var
 begin
   if GetCurrentThreadId = MainThreadID then
   begin
-    Memo1.Lines.Add(Client.PeerAddr + ' 关闭了，关闭原因：'+reason);
-    idx := ListBox1.Items.IndexOfObject(Client);
-    if idx <> -1 then
-      ListBox1.Items.Delete(idx);
-  end
-  else TThread.Synchronize(nil,procedure
+    if client.InheritsFrom(TDxWebSocketClient) then
+    begin
+      Memo2.Lines.Add('客户端关闭了,关闭原因：'+reason);
+      EdtClient.Visible := False;
+      Button4.Visible := False;
+      Button5.Visible := False;
+    end
+    else
     begin
       Memo1.Lines.Add(Client.PeerAddr + ' 关闭了，关闭原因：'+reason);
       idx := ListBox1.Items.IndexOfObject(Client);
       if idx <> -1 then
         ListBox1.Items.Delete(idx);
+      Client.Free;
+    end;
+  end
+  else TThread.Synchronize(nil,procedure
+    begin
+      if client.InheritsFrom(TDxWebSocketClient) then
+      begin
+        Memo2.Lines.Add('客户端关闭了,关闭原因：'+reason);
+        EdtClient.Visible := False;
+        Button4.Visible := False;
+        Button5.Visible := False;
+      end
+      else
+      begin
+        Memo1.Lines.Add(Client.PeerAddr + ' 关闭了，关闭原因：'+reason);
+        idx := ListBox1.Items.IndexOfObject(Client);
+        if idx <> -1 then
+          ListBox1.Items.Delete(idx);
+        Client.Free;
+      end;
     end);
-  Client.Free;
 end;
 
 procedure TForm1.DoClientConnected1(sender: TObject);
 begin
   if GetCurrentThreadId = MainThreadID then
   begin
+    EdtClient.Visible := True;
+    Button4.Visible := True;
+    Button5.Visible := True;
+    Memo2.Lines.Add('客户端连接OK')
   end
   else TThread.Synchronize(nil,procedure
     begin
-      Showmessage('客户端连接成功');
+      EdtClient.Visible := True;
+      Button4.Visible := True;
+      Button5.Visible := True;
+      Memo2.Lines.Add('客户端连接OK');
     end);
 end;
 

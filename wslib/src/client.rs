@@ -33,7 +33,6 @@ impl IntoClientRequest for ClientConfig {
         let mut request = (&*ws_url).into_client_request()?;
         let headers = request.headers_mut();
         let sz = std::mem::size_of::<StringData>();
-        log_msg!(crate::LogLevel::LLDebug,"StringDataSize={}",sz);
         if self.protocol.data != 0 && self.protocol.len != 0{
             let mut cur_proto_data = self.protocol.data;
             let mut proto_s = String::with_capacity(128);
@@ -42,12 +41,11 @@ impl IntoClientRequest for ClientConfig {
                 let s = unsafe{
                     String::from_raw_parts((*cur_proto).data as *mut u8,(*cur_proto).len,(*cur_proto).len)
                 };
-                log_msg!(crate::LogLevel::LLDebug,"protocol {}={},len={}",i,&s,s.len());
                 let s = std::mem::ManuallyDrop::new(s);
                 if i != 0{
                     proto_s.push(',');
                 }
-                proto_s.push_str(&s);
+                proto_s.push_str(s.as_str());
                 cur_proto_data = cur_proto_data + sz;
             }
             if proto_s.len() != 0{
@@ -67,7 +65,7 @@ impl IntoClientRequest for ClientConfig {
                 if i != 0{
                     extensions.push(',');
                 }
-                extensions.push_str(&s);
+                extensions.push_str(s.as_str());
                 cur_ext_data = cur_ext_data + sz;
             }
             if extensions.len() != 0{
@@ -77,13 +75,11 @@ impl IntoClientRequest for ClientConfig {
         if self.custom_headers.data != 0 && self.custom_headers.len != 0{
             let mut head_data = self.custom_headers.data;
             let sz = std::mem::size_of::<HeaderValue>();
-            log_msg!(crate::LogLevel::LLDebug,"HeaderValueSize={}",sz);
             for _i in 0..self.custom_headers.len{
                 let cur_head = head_data  as *const HeaderValue;
                 unsafe {
                     let head: Vec<u8> = Vec::from_raw_parts((*cur_head).header.data as *mut u8,(*cur_head).header.len,(*cur_head).header.len);
                     let v = String::from_raw_parts((*cur_head).value.data as *mut u8,(*cur_head).value.len,(*cur_head).value.len);
-                    log_msg!(crate::LogLevel::LLDebug,"value={},len={}",&v,v.len());
                     let head = std::mem::ManuallyDrop::new(head);
                     let v = std::mem::ManuallyDrop::new(v);
                     headers.insert(HeaderName::from_bytes(head.as_slice()).unwrap(),v.parse().unwrap());
@@ -114,7 +110,6 @@ pub extern "stdcall" fn ws_connect(cfg: ClientConfig,callback: ClientCallBack){
             return;
         },
     }
-    log_msg!(crate::LogLevel::LLDebug,"ws_connect Start");
     let (msg_sender, mut msg_recv) = tokio::sync::mpsc::unbounded_channel::<WebSocketMsg>();
     let new_sender = Box::new(msg_sender.clone());
     let new_sender = Box::into_raw(new_sender) as usize;
@@ -123,7 +118,6 @@ pub extern "stdcall" fn ws_connect(cfg: ClientConfig,callback: ClientCallBack){
             Ok((stream,_))=>{
                 let addr = match stream.get_ref() {
                     tokio_tungstenite::MaybeTlsStream::<TcpStream>::Plain(ref s)=>{
-                        log_msg!(crate::LogLevel::LLDebug,"连接成功，准备接入了");
                         s.peer_addr()
                     },
                     tokio_tungstenite::MaybeTlsStream::<TcpStream>::Rustls(ref s)=>{
@@ -157,8 +151,6 @@ pub extern "stdcall" fn ws_connect(cfg: ClientConfig,callback: ClientCallBack){
                         return;
                     }
                 }
-                log_msg!(crate::LogLevel::LLDebug,"准备接入了");
-
                 let client = on_connected(true,new_sender,&addr_info as *const SocketAddrInfo, callback.manager);
                 if client == 0{
                     log_msg!(crate::LogLevel::LLDebug,"未成功创建client");
